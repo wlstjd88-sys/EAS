@@ -19,3 +19,7 @@
 .barcode-ok{color:#047857;font-weight:850}
 .barcode-error{color:#b91c1c;font-weight:850}
 .input-with-action button{font-size:22px;font-weight:900;color:#0f172a}
+
+/* v0.9 AI assistant */
+.ai-panel{margin:16px 0;padding:15px;border:1px solid #bfdbfe;border-radius:18px;background:linear-gradient(145deg,#eff6ff,#f8fafc)}
+.ai-panel h3{margin:2px 0 0;font-size:17px}.ai-beta{padding:4px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:950}.ai-result-card{margin-top:10px;padding:13px;border-radius:14px;background:#0f172a;color:#fff}.ai-result-card p{margin:9px 0;line-height:1.45;font-size:13px}.ai-result-card small,.ai-result-card span{color:#cbd5e1;font-size:11px}.ai-warning{margin-top:10px;padding:12px;border-radius:13px;background:#fff7ed;color:#9a3412;font-size:12px;font-weight:800;line-height:1.45}.detail-ai{margin:12px 0}.detail-ai .text-button{padding:7px 0;color:#93c5fd}.ai-panel button:disabled{opacity:.6}

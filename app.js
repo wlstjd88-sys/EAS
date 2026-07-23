@@ -1,7 +1,7 @@
-const STORAGE_KEY = 'eas-products-v080';
-const LEGACY_KEYS = ['eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
-const SETTINGS_KEY = 'eas-settings-v080';
-const LEGACY_SETTINGS_KEYS = ['eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
+const STORAGE_KEY = 'eas-products-v090';
+const LEGACY_KEYS = ['eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
+const SETTINGS_KEY = 'eas-settings-v090';
+const LEGACY_SETTINGS_KEYS = ['eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
 
 const defaults = {
   exchangeRate: 1390,
@@ -13,6 +13,7 @@ const defaults = {
   fixedFeeUsd: 0.4,
   targetProfit: 50000,
   targetRoi: 40,
+  aiEndpoint: '',
 };
 
 function readJson(key, fallback) {
@@ -42,7 +43,7 @@ let products = migrateValue(STORAGE_KEY, LEGACY_KEYS, []);
 let route = 'dashboard';
 let editingId = null;
 
-const APP_VERSION = '0.8.1';
+const APP_VERSION = '0.9.0';
 const app = document.querySelector('#app');
 const title = document.querySelector('#page-title');
 const photoInput = document.querySelector('#photo-input');
@@ -96,6 +97,51 @@ function isValidGtin(value) {
   const check = digits.pop();
   const sum = digits.reverse().reduce((total, digit, index) => total + digit * (index % 2 === 0 ? 3 : 1), 0);
   return ((10 - (sum % 10)) % 10) === check;
+}
+
+
+function cleanAiText(value, max = 120) {
+  return String(value || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
+}
+
+function buildSearchKeyword(data = {}) {
+  return [data.brand, data.productName, data.color, data.category, data.condition === 'NEW' ? 'New' : '']
+    .map((item) => cleanAiText(item, 50))
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function requestAiAnalysis({ photos, barcode, brand, productName }) {
+  const endpoint = String(settings.aiEndpoint || '').trim();
+  if (!endpoint) throw new Error('AI_ENDPOINT_MISSING');
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      app: 'EAS', version: APP_VERSION, barcode, brand, productName,
+      photos: (photos || []).slice(0, 3),
+      requestedFields: ['brand', 'productName', 'category', 'color', 'condition', 'confidence', 'searchKeyword', 'summary'],
+    }),
+  });
+  if (!response.ok) throw new Error(`AI_HTTP_${response.status}`);
+  const raw = await response.json();
+  const condition = ['NEW', 'USED', 'UNKNOWN'].includes(String(raw.condition || '').toUpperCase())
+    ? String(raw.condition).toUpperCase() : 'UNKNOWN';
+  const confidence = Math.max(0, Math.min(100, Number(raw.confidence) || 0));
+  const result = {
+    brand: cleanAiText(raw.brand, 60),
+    productName: cleanAiText(raw.productName || raw.model, 100),
+    category: cleanAiText(raw.category, 60),
+    color: cleanAiText(raw.color, 60),
+    condition, confidence,
+    searchKeyword: cleanAiText(raw.searchKeyword, 180),
+    summary: cleanAiText(raw.summary, 400),
+    analyzedAt: new Date().toISOString(),
+  };
+  if (!result.searchKeyword) result.searchKeyword = buildSearchKeyword(result);
+  return result;
 }
 
 function buyConfidenceLabel(score) {
@@ -279,6 +325,17 @@ function renderEditor() {
       <div class="field"><label for="brand">브랜드</label><input id="brand" autocomplete="organization" value="${esc(product.brand)}" placeholder="예: Nike"></div>
       <div class="field"><label for="productName">상품명 / 모델</label><input id="productName" value="${esc(product.productName || product.model || '')}" placeholder="예: Air Max 97"></div>
       <div class="field"><label for="barcode">상품 바코드 (UPC / EAN)</label><div class="input-with-action"><input id="barcode" inputmode="numeric" value="${esc(product.barcode)}" placeholder="8·12·13자리"><button type="button" id="barcode-photo" aria-label="바코드 촬영">▥</button></div><small class="helper" id="barcode-status">카메라로 촬영하거나 숫자를 직접 입력하세요.</small></div>
+      <div class="ai-panel">
+        <div class="row between"><div><p class="eyebrow">EAS AI ASSISTANT</p><h3>사진으로 상품 정보 분석</h3></div><span class="ai-beta">BETA</span></div>
+        <p class="muted tiny">대표 사진과 바코드를 AI 분석 서버로 보내 브랜드·상품명·색상·카테고리·검색어를 제안합니다.</p>
+        <button type="button" class="primary full" id="ai-analyze">✨ AI 사진 분석</button>
+        <div id="ai-result"></div>
+      </div>
+      <div class="two-col">
+        <div class="field"><label for="category">카테고리</label><input id="category" value="${esc(product.category || '')}" placeholder="예: Slides"></div>
+        <div class="field"><label for="color">색상</label><input id="color" value="${esc(product.color || '')}" placeholder="예: White / Blue"></div>
+      </div>
+      <div class="field"><label for="searchKeyword">eBay 검색어</label><div class="input-with-action"><input id="searchKeyword" value="${esc(product.searchKeyword || product.ai?.searchKeyword || '')}" placeholder="AI가 검색어를 제안합니다"><button type="button" id="open-ebay" aria-label="eBay 검색">↗</button></div></div>
     </section>
     <section class="card">
       <h2 class="form-title">2. 가격 입력</h2>
@@ -355,6 +412,51 @@ function renderEditor() {
   }
   barcodeField.addEventListener('input', () => validateBarcode(false));
   validateBarcode(false);
+
+  const aiResultHolder = document.querySelector('#ai-result');
+  function drawAiResult(ai = product.ai) {
+    if (!ai) { aiResultHolder.innerHTML = ''; return; }
+    aiResultHolder.innerHTML = `<div class="ai-result-card">
+      <div class="row between"><strong>${esc(ai.condition || 'UNKNOWN')}</strong><span>${Math.round(Number(ai.confidence) || 0)}% 신뢰도</span></div>
+      ${ai.summary ? `<p>${esc(ai.summary)}</p>` : ''}
+      <small>${ai.analyzedAt ? `분석: ${new Date(ai.analyzedAt).toLocaleString('ko-KR')}` : ''}</small>
+    </div>`;
+  }
+  drawAiResult();
+  document.querySelector('#ai-analyze').onclick = async () => {
+    const button = document.querySelector('#ai-analyze');
+    if (!photos.length) { alert('AI 분석 전에 상품 사진을 한 장 이상 촬영해 주세요.'); return; }
+    button.disabled = true;
+    button.textContent = 'AI 분석 중…';
+    aiResultHolder.innerHTML = '<div class="inline-hint">사진을 분석하고 있습니다. 잠시만 기다려 주세요.</div>';
+    try {
+      const ai = await requestAiAnalysis({ photos, barcode: val('barcode'), brand: val('brand'), productName: val('productName') });
+      product.ai = ai;
+      if (ai.brand && !val('brand').trim()) document.querySelector('#brand').value = ai.brand;
+      if (ai.productName && !val('productName').trim()) document.querySelector('#productName').value = ai.productName;
+      if (ai.category) document.querySelector('#category').value = ai.category;
+      if (ai.color) document.querySelector('#color').value = ai.color;
+      if (ai.searchKeyword) document.querySelector('#searchKeyword').value = ai.searchKeyword;
+      drawAiResult(ai);
+      navigator.vibrate?.(80);
+    } catch (error) {
+      console.error('AI analysis', error);
+      if (String(error.message) === 'AI_ENDPOINT_MISSING') {
+        aiResultHolder.innerHTML = '<div class="ai-warning">설정에서 AI 분석 서버 주소를 먼저 입력해 주세요. API 비밀키는 앱에 직접 넣지 않습니다.</div>';
+      } else {
+        aiResultHolder.innerHTML = '<div class="ai-warning">AI 분석에 실패했습니다. 서버 주소와 인터넷 연결을 확인해 주세요.</div>';
+      }
+    } finally {
+      button.disabled = false;
+      button.textContent = '✨ AI 사진 분석';
+    }
+  };
+  document.querySelector('#open-ebay').onclick = () => {
+    const keyword = val('searchKeyword').trim() || buildSearchKeyword({ brand: val('brand'), productName: val('productName'), color: val('color'), category: val('category'), condition: product.ai?.condition });
+    if (!keyword) { alert('검색어를 입력하거나 AI 분석을 먼저 실행해 주세요.'); return; }
+    window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(keyword)}&LH_ItemCondition=1000`, '_blank', 'noopener');
+  };
+
   document.querySelector('#barcode-photo').onclick = () => barcodeImageInput.click();
   barcodeImageInput.onchange = async (event) => {
     const file = event.target.files?.[0];
@@ -439,6 +541,10 @@ function renderEditor() {
       brand: val('brand').trim(),
       productName: val('productName').trim(),
       barcode: val('barcode').trim(),
+      category: val('category').trim(),
+      color: val('color').trim(),
+      searchKeyword: val('searchKeyword').trim(),
+      ai: product.ai || null,
       purchasePrice: num('purchasePrice'),
       sellingPrice: num('sellingPrice'),
       shipping: num('shipping'),
@@ -488,6 +594,7 @@ function renderDetail() {
       ${product.photos?.length ? `<div class="detail-photo"><img src="${product.photos[0]}" alt="상품 사진"></div>${product.photos.length > 1 ? `<div class="detail-gallery">${product.photos.map((src, index) => `<button type="button" data-gallery-photo="${index}"><img src="${src}" alt="상품 사진 ${index + 1}"></button>`).join('')}</div>` : ''}` : ''}
       <h2>${esc(name)}</h2>
       <p class="muted">${esc(product.barcode || '바코드 없음')}</p>
+      ${product.ai ? `<div class="ai-result-card detail-ai"><div class="row between"><strong>AI ${esc(product.ai.condition || 'UNKNOWN')}</strong><span>${Math.round(Number(product.ai.confidence)||0)}%</span></div>${product.ai.summary ? `<p>${esc(product.ai.summary)}</p>` : ''}${product.searchKeyword ? `<button class="text-button" type="button" id="detail-ebay">eBay 새상품 검색 ↗</button>` : ''}</div>` : ''}
       <dl class="detail-list">
         <div><dt>매입가</dt><dd>${won(product.purchasePrice)}</dd></div>
         <div><dt>판매가</dt><dd>${usd(product.sellingPrice)}</dd></div>
@@ -505,6 +612,7 @@ function renderDetail() {
       if (image) image.src = product.photos[Number(button.dataset.galleryPhoto)];
     };
   });
+  document.querySelector('#detail-ebay')?.addEventListener('click', () => window.open(`https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(product.searchKeyword)}&LH_ItemCondition=1000`, '_blank', 'noopener'));
   document.querySelector('#edit').onclick = () => openEditor(product.id);
   document.querySelector('#delete').onclick = () => {
     if (confirm('이 상품을 삭제할까요?')) {
@@ -536,6 +644,7 @@ function renderSettings() {
     <div class="two-col"><div class="field"><label for="returnReserveRate">반품 충당률 (%)</label><input id="returnReserveRate" type="number" step="0.1" value="${settings.returnReserveRate}"></div><div class="field"><label for="fixedFeeUsd">고정 수수료 (USD)</label><input id="fixedFeeUsd" type="number" step="0.01" value="${settings.fixedFeeUsd}"></div></div>
     <div class="two-col"><div class="field"><label for="internationalShipping">기본 국제배송비 (KRW)</label><input id="internationalShipping" type="number" value="${settings.internationalShipping}"></div><div class="field"><label for="packingCost">기본 포장비 (KRW)</label><input id="packingCost" type="number" value="${settings.packingCost}"></div></div>
     <div class="two-col"><div class="field"><label for="targetProfit">목표 순이익</label><input id="targetProfit" type="number" value="${settings.targetProfit}"></div><div class="field"><label for="targetRoi">목표 ROI (%)</label><input id="targetRoi" type="number" value="${settings.targetRoi}"></div></div>
+    <div class="field"><label for="aiEndpoint">AI 분석 서버 주소</label><input id="aiEndpoint" type="url" value="${esc(settings.aiEndpoint || '')}" placeholder="https://your-worker.example.com/analyze"><small class="helper">비밀 API 키는 GitHub Pages 앱에 넣지 말고 서버에만 보관하세요.</small></div>
     <button class="primary full" id="save-settings">설정 저장</button>
   </section>
   <section class="card install-note"><strong>계산 기준</strong><p>수수료, 광고율, 반품 충당률, 배송비와 포장비는 모두 직접 수정 가능한 기본값입니다. 상품 등록 화면에서 상품별 비용도 별도로 바꿀 수 있습니다.</p></section>
@@ -543,6 +652,7 @@ function renderSettings() {
   <section class="card"><button class="secondary full" id="export-data">데이터 내보내기</button></section>`;
   document.querySelector('#save-settings').onclick = () => {
     ['exchangeRate', 'feeRate', 'adRate', 'returnReserveRate', 'fixedFeeUsd', 'internationalShipping', 'packingCost', 'targetProfit', 'targetRoi'].forEach((key) => { settings[key] = num(key); });
+    settings.aiEndpoint = val('aiEndpoint').trim();
     saveSettings();
     alert('설정을 저장했습니다.');
   };
