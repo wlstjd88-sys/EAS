@@ -1,4 +1,4 @@
-# EAS v0.8.0
+# EAS v0.8.1
 
 eBay 소싱 현장에서 상품 사진, UPC/EAN 바코드, 매입가와 예상 판매가를 기록하고 예상 수익 및 BUY CONFIDENCE를 계산하는 iPhone 우선 PWA입니다.
 
@@ -25,3 +25,9 @@ python3 serve.py
 ## 주의
 
 상품 데이터와 사진은 현재 브라우저의 localStorage에 저장됩니다. iPhone 브라우저에 따라 `BarcodeDetector`가 지원되지 않을 수 있으며, 이 경우 바코드 숫자를 직접 입력해야 합니다.
+
+
+## v0.8.1
+- iPhone Safari에서 ZXing 이미지 판독 폴백 추가
+- 촬영한 UPC/EAN 바코드 사진을 자동 분석
+- 내장 BarcodeDetector 지원 브라우저에서는 기존 판독기를 우선 사용

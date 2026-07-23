@@ -42,7 +42,7 @@ let products = migrateValue(STORAGE_KEY, LEGACY_KEYS, []);
 let route = 'dashboard';
 let editingId = null;
 
-const APP_VERSION = '0.8.0';
+const APP_VERSION = '0.8.1';
 const app = document.querySelector('#app');
 const title = document.querySelector('#page-title');
 const photoInput = document.querySelector('#photo-input');
@@ -362,23 +362,45 @@ function renderEditor() {
     if (!file) return;
     barcodeStatus.textContent = '바코드를 분석하고 있습니다…';
     try {
-      if (!('BarcodeDetector' in window)) throw new Error('UNSUPPORTED');
-      const supported = await BarcodeDetector.getSupportedFormats();
-      const formats = ['ean_8', 'ean_13', 'upc_a', 'upc_e'].filter((format) => supported.includes(format));
-      const detector = new BarcodeDetector({ formats });
-      const bitmap = await createImageBitmap(file);
-      const results = await detector.detect(bitmap);
-      bitmap.close?.();
-      const match = results.map((item) => normalizeBarcode(item.rawValue)).find((code) => barcodeKind(code));
-      if (!match) throw new Error('NOT_FOUND');
+      let match = '';
+
+      // 지원 브라우저에서는 내장 BarcodeDetector를 먼저 사용합니다.
+      if ('BarcodeDetector' in window) {
+        const supported = await BarcodeDetector.getSupportedFormats();
+        const formats = ['ean_8', 'ean_13', 'upc_a', 'upc_e'].filter((format) => supported.includes(format));
+        if (formats.length) {
+          const detector = new BarcodeDetector({ formats });
+          const bitmap = await createImageBitmap(file);
+          const results = await detector.detect(bitmap);
+          bitmap.close?.();
+          match = results.map((item) => normalizeBarcode(item.rawValue)).find((code) => barcodeKind(code)) || '';
+        }
+      }
+
+      // iPhone Safari 등 내장 판독기가 없는 환경에서는 ZXing으로 촬영 이미지를 분석합니다.
+      if (!match && window.ZXingBrowser?.BrowserMultiFormatReader) {
+        const imageUrl = URL.createObjectURL(file);
+        try {
+          const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
+          const result = await reader.decodeFromImageUrl(imageUrl);
+          match = normalizeBarcode(result?.getText?.() || result?.text || '');
+        } finally {
+          URL.revokeObjectURL(imageUrl);
+        }
+      }
+
+      if (!barcodeKind(match) || !isValidGtin(match)) throw new Error('NOT_FOUND');
       barcodeField.value = match;
       validateBarcode(true);
+      barcodeStatus.textContent = `${barcodeKind(match)} 자동 판독 완료`;
+      barcodeStatus.className = 'helper barcode-ok';
       navigator.vibrate?.(80);
     } catch (error) {
       console.warn('barcode scan', error);
-      barcodeStatus.textContent = error.message === 'UNSUPPORTED'
-        ? '이 iPhone 브라우저는 자동 판독을 지원하지 않습니다. 바코드 아래 숫자를 직접 입력해 주세요.'
-        : '바코드를 찾지 못했습니다. 밝은 곳에서 정면으로 다시 촬영해 주세요.';
+      const libraryUnavailable = !('BarcodeDetector' in window) && !window.ZXingBrowser?.BrowserMultiFormatReader;
+      barcodeStatus.textContent = libraryUnavailable
+        ? '바코드 판독 모듈을 불러오지 못했습니다. 인터넷 연결을 확인하거나 숫자를 직접 입력해 주세요.'
+        : '바코드를 찾지 못했습니다. 바코드 전체가 선명하게 보이도록 정면에서 다시 촬영해 주세요.';
       barcodeStatus.className = 'helper barcode-error';
       barcodeField.focus();
     }
