@@ -1,7 +1,7 @@
-const STORAGE_KEY = 'eas-products-v090';
-const LEGACY_KEYS = ['eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
-const SETTINGS_KEY = 'eas-settings-v090';
-const LEGACY_SETTINGS_KEYS = ['eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
+const STORAGE_KEY = 'eas-products-v100';
+const LEGACY_KEYS = ['eas-products-v090', 'eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
+const SETTINGS_KEY = 'eas-settings-v100';
+const LEGACY_SETTINGS_KEYS = ['eas-settings-v090', 'eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
 
 const defaults = {
   exchangeRate: 1390,
@@ -13,7 +13,7 @@ const defaults = {
   fixedFeeUsd: 0.4,
   targetProfit: 50000,
   targetRoi: 40,
-  aiEndpoint: '',
+  aiEndpoint: 'https://black-snow-e236.wlstjd88.workers.dev/analyze',
 };
 
 function readJson(key, fallback) {
@@ -43,7 +43,7 @@ let products = migrateValue(STORAGE_KEY, LEGACY_KEYS, []);
 let route = 'dashboard';
 let editingId = null;
 
-const APP_VERSION = '0.9.0';
+const APP_VERSION = '1.0.0';
 const app = document.querySelector('#app');
 const title = document.querySelector('#page-title');
 const photoInput = document.querySelector('#photo-input');
@@ -442,7 +442,7 @@ function renderEditor() {
     } catch (error) {
       console.error('AI analysis', error);
       if (String(error.message) === 'AI_ENDPOINT_MISSING') {
-        aiResultHolder.innerHTML = '<div class="ai-warning">설정에서 AI 분석 서버 주소를 먼저 입력해 주세요. API 비밀키는 앱에 직접 넣지 않습니다.</div>';
+        aiResultHolder.innerHTML = '<div class="ai-warning">설정의 AI 분석 서버 주소를 확인해 주세요. API 비밀키는 앱에 저장되지 않습니다.</div>';
       } else {
         aiResultHolder.innerHTML = '<div class="ai-warning">AI 분석에 실패했습니다. 서버 주소와 인터넷 연결을 확인해 주세요.</div>';
       }
