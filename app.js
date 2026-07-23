@@ -1,10 +1,17 @@
-const STORAGE_KEY = 'eas-products-v101';
-const LEGACY_KEYS = ['eas-products-v100', 'eas-products-v090', 'eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
-const SETTINGS_KEY = 'eas-settings-v101';
-const LEGACY_SETTINGS_KEYS = ['eas-settings-v100', 'eas-settings-v090', 'eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
+const STORAGE_KEY = 'eas-products-v110';
+const LEGACY_KEYS = ['eas-products-v101', 'eas-products-v100', 'eas-products-v090', 'eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
+const SETTINGS_KEY = 'eas-settings-v110';
+const LEGACY_SETTINGS_KEYS = ['eas-settings-v101', 'eas-settings-v100', 'eas-settings-v090', 'eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
 
 const defaults = {
   exchangeRate: 1390,
+  exchangeMode: 'conservative',
+  manualExchangeRate: 1390,
+  latestExchangeRate: 1390,
+  exchangeRateDate: '',
+  exchangeRateUpdatedAt: '',
+  exchangeRateSource: 'Frankfurter',
+  conservativeRatePercent: 98,
   feeRate: 13.25,
   adRate: 2,
   returnReserveRate: 2,
@@ -43,7 +50,7 @@ let products = migrateValue(STORAGE_KEY, LEGACY_KEYS, []);
 let route = 'dashboard';
 let editingId = null;
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.0';
 const app = document.querySelector('#app');
 const title = document.querySelector('#page-title');
 const photoInput = document.querySelector('#photo-input');
@@ -110,7 +117,72 @@ function normalizeAiValue(value, max = 120) {
 }
 
 function aiConditionLabel(condition) {
-  return ({ NEW: '새상품 추정', USED: '중고 추정', UNKNOWN: '상태 확인 필요' })[condition] || '상태 확인 필요';
+  return ({ NEW: '새상품 추정', USED: '중고 추정', UNKNOWN: '상태 미확인' })[condition] || '상태 미확인';
+}
+
+function aiResultHeadline(ai = {}) {
+  if (ai.condition === 'NEW') return '새상품 추정';
+  if (ai.condition === 'USED') return '중고상품 추정';
+  if (ai.brand || ai.productName || ai.modelNumber) return '상품 식별 완료';
+  return '모델 확인 필요';
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+async function requestAiAnalysisWithRetry(payload, onRetry) {
+  const maxAttempts = 3;
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await requestAiAnalysis(payload);
+    } catch (error) {
+      lastError = error;
+      if (!error?.retryable || attempt >= maxAttempts) throw error;
+      const delay = attempt === 1 ? 1400 : 3200;
+      onRetry?.(attempt + 1, maxAttempts, delay, error);
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+}
+
+function effectiveExchangeRate() {
+  if (settings.exchangeMode === 'manual') return Number(settings.manualExchangeRate) || Number(settings.exchangeRate) || 1390;
+  const latest = Number(settings.latestExchangeRate) || Number(settings.exchangeRate) || 1390;
+  if (settings.exchangeMode === 'latest') return Math.round(latest);
+  return Math.round(latest * ((Number(settings.conservativeRatePercent) || 98) / 100));
+}
+
+function applyExchangeMode() {
+  settings.exchangeRate = effectiveExchangeRate();
+  return settings.exchangeRate;
+}
+
+async function fetchLatestExchangeRate({ force = false } = {}) {
+  const last = Date.parse(settings.exchangeRateUpdatedAt || '') || 0;
+  if (!force && last && Date.now() - last < 12 * 60 * 60 * 1000) return settings.latestExchangeRate;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch('https://api.frankfurter.dev/v2/rate/USD/KRW', { signal: controller.signal, cache: 'no-store' });
+    if (!response.ok) throw new Error(`환율 API 오류 (${response.status})`);
+    const data = await response.json();
+    const rate = Number(data?.rate);
+    if (!Number.isFinite(rate) || rate < 500 || rate > 3000) throw new Error('환율 응답이 올바르지 않습니다.');
+    settings.latestExchangeRate = rate;
+    settings.exchangeRateDate = String(data.date || '');
+    settings.exchangeRateUpdatedAt = new Date().toISOString();
+    settings.exchangeRateSource = 'Frankfurter 중앙은행 기준환율';
+    applyExchangeMode();
+    saveSettings();
+    return rate;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function exchangeModeLabel(mode = settings.exchangeMode) {
+  return ({ latest: '최신 기준환율', conservative: '보수환율', manual: '직접 입력' })[mode] || '보수환율';
 }
 
 function buildSearchKeyword(data = {}) {
@@ -147,7 +219,7 @@ async function requestAiAnalysis({ photos, barcode, brand, productName }) {
       body: JSON.stringify({
         app: 'EAS', version: APP_VERSION, barcode, brand, productName,
         photos: (photos || []).slice(0, 3),
-        requestedFields: ['brand', 'productName', 'category', 'color', 'condition', 'confidence', 'searchKeyword', 'summary'],
+        requestedFields: ['brand', 'productName', 'modelNumber', 'size', 'category', 'color', 'condition', 'confidence', 'searchKeyword', 'summary'],
       }),
     });
   } catch (error) {
@@ -177,6 +249,8 @@ async function requestAiAnalysis({ photos, barcode, brand, productName }) {
   const result = {
     brand: normalizeAiValue(raw.brand, 60),
     productName: normalizeAiValue(raw.productName || raw.model, 100),
+    modelNumber: normalizeAiValue(raw.modelNumber || raw.styleCode || raw.sku, 60),
+    size: normalizeAiValue(raw.size, 60),
     category: normalizeAiValue(raw.category, 60),
     color: normalizeAiValue(raw.color, 60),
     condition, confidence,
@@ -472,7 +546,7 @@ function renderEditor() {
   function drawAiResult(ai = product.ai) {
     if (!ai) { aiResultHolder.innerHTML = ''; return; }
     aiResultHolder.innerHTML = `<div class="ai-result-card">
-      <div class="row between"><strong>${esc(aiConditionLabel(ai.condition))}</strong><span>${Math.round(Number(ai.confidence) || 0)}% 신뢰도</span></div>
+      <div class="row between"><strong>${esc(aiResultHeadline(ai))}</strong><span>${Math.round(Number(ai.confidence) || 0)}% 신뢰도</span></div>
       ${ai.summary ? `<p>${esc(ai.summary)}</p>` : ''}
       <small>${ai.analyzedAt ? `분석: ${new Date(ai.analyzedAt).toLocaleString('ko-KR')}` : ''}</small>
     </div>`;
@@ -485,7 +559,13 @@ function renderEditor() {
     button.textContent = 'AI 분석 중…';
     aiResultHolder.innerHTML = `<div class="inline-hint">사진 ${Math.min(photos.length, 3)}장을 분석하고 있습니다. 잠시만 기다려 주세요.</div>`;
     try {
-      const ai = await requestAiAnalysis({ photos, barcode: val('barcode'), brand: val('brand'), productName: val('productName') });
+      const ai = await requestAiAnalysisWithRetry(
+        { photos, barcode: val('barcode'), brand: val('brand'), productName: val('productName') },
+        (attempt, maxAttempts, delay) => {
+          button.textContent = `AI 재시도 중… (${attempt}/${maxAttempts})`;
+          aiResultHolder.innerHTML = `<div class="inline-hint">AI 서버 응답이 불안정해 ${Math.round(delay / 100) / 10}초 후 자동으로 다시 시도합니다.</div>`;
+        },
+      );
       product.ai = ai;
       if (ai.brand && !val('brand').trim()) document.querySelector('#brand').value = ai.brand;
       if (ai.productName && !val('productName').trim()) document.querySelector('#productName').value = ai.productName;
@@ -605,6 +685,9 @@ function renderEditor() {
       packing: num('packing'),
       notes: val('notes').trim(),
       photos,
+      exchangeRateUsed: Number(settings.exchangeRate) || 0,
+      exchangeRateMode: settings.exchangeMode || 'manual',
+      exchangeRateDate: settings.exchangeRateDate || '',
       updatedAt: new Date().toISOString(),
     };
     data.result = calculate({ ...settings, ...data });
@@ -648,10 +731,11 @@ function renderDetail() {
       ${product.photos?.length ? `<div class="detail-photo"><img src="${product.photos[0]}" alt="상품 사진"></div>${product.photos.length > 1 ? `<div class="detail-gallery">${product.photos.map((src, index) => `<button type="button" data-gallery-photo="${index}"><img src="${src}" alt="상품 사진 ${index + 1}"></button>`).join('')}</div>` : ''}` : ''}
       <h2>${esc(name)}</h2>
       <p class="muted">${esc(product.barcode || '바코드 없음')}</p>
-      ${product.ai ? `<div class="ai-result-card detail-ai"><div class="row between"><strong>AI ${esc(aiConditionLabel(product.ai.condition))}</strong><span>${Math.round(Number(product.ai.confidence)||0)}%</span></div>${product.ai.summary ? `<p>${esc(product.ai.summary)}</p>` : ''}${product.searchKeyword ? `<button class="text-button" type="button" id="detail-ebay">eBay 새상품 검색 ↗</button>` : ''}</div>` : ''}
+      ${product.ai ? `<div class="ai-result-card detail-ai"><div class="row between"><strong>AI ${esc(aiResultHeadline(product.ai))}</strong><span>${Math.round(Number(product.ai.confidence)||0)}%</span></div>${product.ai.summary ? `<p>${esc(product.ai.summary)}</p>` : ''}${product.searchKeyword ? `<button class="text-button" type="button" id="detail-ebay">eBay 새상품 검색 ↗</button>` : ''}</div>` : ''}
       <dl class="detail-list">
         <div><dt>매입가</dt><dd>${won(product.purchasePrice)}</dd></div>
         <div><dt>판매가</dt><dd>${usd(product.sellingPrice)}</dd></div>
+        <div><dt>적용 환율</dt><dd>${Number(product.exchangeRateUsed || settings.exchangeRate).toLocaleString('ko-KR')}원${product.exchangeRateDate ? ` · ${esc(product.exchangeRateDate)}` : ''}</dd></div>
         <div><dt>수수료·충당금</dt><dd>${won(product.result.variableFees + product.result.fixedFeeKrw)}</dd></div>
         <div><dt>배송·포장</dt><dd>${won(product.shipping + product.packing)}</dd></div>
         <div><dt>손익분기 판매가</dt><dd>${usd(product.result.breakEven)}</dd></div>
@@ -692,8 +776,28 @@ function renderCalculator() {
 
 function renderSettings() {
   title.textContent = '설정';
-  app.innerHTML = `<section class="card">
-    <div class="field"><label for="exchangeRate">환율 (1 USD → KRW)</label><input id="exchangeRate" type="number" value="${settings.exchangeRate}"></div>
+  applyExchangeMode();
+  const updatedText = settings.exchangeRateUpdatedAt
+    ? new Date(settings.exchangeRateUpdatedAt).toLocaleString('ko-KR')
+    : '아직 자동 조회하지 않음';
+  const sourceDate = settings.exchangeRateDate ? ` · 기준일 ${esc(settings.exchangeRateDate)}` : '';
+  app.innerHTML = `<section class="card exchange-card">
+    <div class="row between"><div><p class="eyebrow">USD → KRW</p><h2 class="form-title">환율 설정</h2></div><span class="rate-value">${Number(settings.exchangeRate).toLocaleString('ko-KR')}원</span></div>
+    <div class="field"><label for="exchangeMode">계산에 사용할 환율</label><select id="exchangeMode">
+      <option value="conservative" ${settings.exchangeMode === 'conservative' ? 'selected' : ''}>보수환율 (최신 기준환율의 ${Number(settings.conservativeRatePercent) || 98}%)</option>
+      <option value="latest" ${settings.exchangeMode === 'latest' ? 'selected' : ''}>최신 기준환율</option>
+      <option value="manual" ${settings.exchangeMode === 'manual' ? 'selected' : ''}>직접 입력</option>
+    </select></div>
+    <div class="two-col">
+      <div class="field"><label for="latestExchangeRate">최신 기준환율</label><input id="latestExchangeRate" type="number" value="${Number(settings.latestExchangeRate) || ''}" readonly></div>
+      <div class="field"><label for="manualExchangeRate">직접 입력 환율</label><input id="manualExchangeRate" type="number" value="${Number(settings.manualExchangeRate) || Number(settings.exchangeRate)}"></div>
+    </div>
+    <div class="field"><label for="conservativeRatePercent">보수환율 비율 (%)</label><input id="conservativeRatePercent" type="number" min="80" max="100" step="0.1" value="${Number(settings.conservativeRatePercent) || 98}"></div>
+    <div class="rate-status" id="rate-status"><strong>${esc(exchangeModeLabel())}: ${Number(settings.exchangeRate).toLocaleString('ko-KR')}원</strong><small>${esc(settings.exchangeRateSource || 'Frankfurter')}${sourceDate}<br>마지막 조회: ${esc(updatedText)}</small></div>
+    <button class="secondary full" type="button" id="refresh-rate">↻ 최신 환율 조회</button>
+    <small class="helper">자동 환율은 실시간 매매 환율이 아니라 중앙은행 자료 기반의 최신 기준환율입니다. 영업일 기준으로 갱신되며 실제 카드사·은행 환율과 차이가 날 수 있습니다.</small>
+  </section>
+  <section class="card">
     <div class="two-col"><div class="field"><label for="feeRate">eBay 수수료 (%)</label><input id="feeRate" type="number" step="0.01" value="${settings.feeRate}"></div><div class="field"><label for="adRate">광고율 (%)</label><input id="adRate" type="number" step="0.1" value="${settings.adRate}"></div></div>
     <div class="two-col"><div class="field"><label for="returnReserveRate">반품 충당률 (%)</label><input id="returnReserveRate" type="number" step="0.1" value="${settings.returnReserveRate}"></div><div class="field"><label for="fixedFeeUsd">고정 수수료 (USD)</label><input id="fixedFeeUsd" type="number" step="0.01" value="${settings.fixedFeeUsd}"></div></div>
     <div class="two-col"><div class="field"><label for="internationalShipping">기본 국제배송비 (KRW)</label><input id="internationalShipping" type="number" value="${settings.internationalShipping}"></div><div class="field"><label for="packingCost">기본 포장비 (KRW)</label><input id="packingCost" type="number" value="${settings.packingCost}"></div></div>
@@ -701,14 +805,46 @@ function renderSettings() {
     <div class="field"><label for="aiEndpoint">AI 분석 서버 주소</label><input id="aiEndpoint" type="url" value="${esc(settings.aiEndpoint || '')}" placeholder="https://your-worker.example.com/analyze"><small class="helper">비밀 API 키는 GitHub Pages 앱에 넣지 말고 서버에만 보관하세요.</small></div>
     <button class="primary full" id="save-settings">설정 저장</button>
   </section>
-  <section class="card install-note"><strong>계산 기준</strong><p>수수료, 광고율, 반품 충당률, 배송비와 포장비는 모두 직접 수정 가능한 기본값입니다. 상품 등록 화면에서 상품별 비용도 별도로 바꿀 수 있습니다.</p></section>
+  <section class="card install-note"><strong>계산 기준</strong><p>자동 환율, 수수료, 광고율, 반품 충당률, 배송비와 포장비를 반영합니다. 상품 저장 시 계산에 사용한 환율도 함께 기록됩니다.</p></section>
   <section class="card install-note"><strong>아이폰 설치 방법</strong><p>Safari에서 배포 주소를 연 뒤 공유 → 홈 화면에 추가를 누르세요. 상품 데이터는 이 기기에 저장됩니다.</p></section>
   <section class="card"><button class="secondary full" id="export-data">데이터 내보내기</button></section>`;
+
+  function previewRate() {
+    settings.exchangeMode = val('exchangeMode') || 'conservative';
+    settings.manualExchangeRate = num('manualExchangeRate') || settings.manualExchangeRate || 1390;
+    settings.conservativeRatePercent = num('conservativeRatePercent') || 98;
+    applyExchangeMode();
+    const holder = document.querySelector('#rate-status');
+    if (holder) holder.querySelector('strong').textContent = `${exchangeModeLabel()}: ${Number(settings.exchangeRate).toLocaleString('ko-KR')}원`;
+  }
+  ['exchangeMode', 'manualExchangeRate', 'conservativeRatePercent'].forEach((id) => document.querySelector(`#${id}`).addEventListener('input', previewRate));
+
+  document.querySelector('#refresh-rate').onclick = async () => {
+    const button = document.querySelector('#refresh-rate');
+    button.disabled = true;
+    button.textContent = '환율 조회 중…';
+    try {
+      await fetchLatestExchangeRate({ force: true });
+      renderSettings();
+    } catch (error) {
+      console.error('환율 조회', error);
+      const holder = document.querySelector('#rate-status');
+      if (holder) holder.innerHTML = `<strong>환율 조회 실패</strong><small>${esc(error?.message || '인터넷 연결을 확인해 주세요.')}<br>마지막 저장 환율 ${Number(settings.exchangeRate).toLocaleString('ko-KR')}원을 계속 사용합니다.</small>`;
+      button.disabled = false;
+      button.textContent = '↻ 다시 조회';
+    }
+  };
+
   document.querySelector('#save-settings').onclick = () => {
-    ['exchangeRate', 'feeRate', 'adRate', 'returnReserveRate', 'fixedFeeUsd', 'internationalShipping', 'packingCost', 'targetProfit', 'targetRoi'].forEach((key) => { settings[key] = num(key); });
+    settings.exchangeMode = val('exchangeMode') || 'conservative';
+    settings.manualExchangeRate = num('manualExchangeRate') || settings.manualExchangeRate || 1390;
+    settings.conservativeRatePercent = num('conservativeRatePercent') || 98;
+    ['feeRate', 'adRate', 'returnReserveRate', 'fixedFeeUsd', 'internationalShipping', 'packingCost', 'targetProfit', 'targetRoi'].forEach((key) => { settings[key] = num(key); });
     settings.aiEndpoint = val('aiEndpoint').trim();
+    applyExchangeMode();
     saveSettings();
-    alert('설정을 저장했습니다.');
+    alert(`설정을 저장했습니다. 적용 환율은 ${Number(settings.exchangeRate).toLocaleString('ko-KR')}원입니다.`);
+    renderSettings();
   };
   document.querySelector('#export-data').onclick = () => {
     const blob = new Blob([JSON.stringify({ version: APP_VERSION, exportedAt: new Date().toISOString(), settings, products }, null, 2)], { type: 'application/json' });
@@ -763,7 +899,15 @@ function compressDataUrl(source) {
 }
 
 
+if (!settings.exchangeMode) settings.exchangeMode = 'manual';
+if (!settings.manualExchangeRate) settings.manualExchangeRate = Number(settings.exchangeRate) || 1390;
+if (!settings.latestExchangeRate) settings.latestExchangeRate = Number(settings.exchangeRate) || 1390;
+applyExchangeMode();
+
 document.querySelectorAll('.bottom-nav button').forEach((button) => { button.onclick = () => nav(button.dataset.route); });
 document.querySelector('#new-product-top').onclick = () => openEditor();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 render();
+if (settings.exchangeMode !== 'manual') {
+  fetchLatestExchangeRate().then(() => { if (route === 'settings') renderSettings(); }).catch((error) => console.warn('자동 환율 조회 실패', error));
+}
