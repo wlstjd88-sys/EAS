@@ -1,7 +1,7 @@
-const STORAGE_KEY = 'eas-products-v100';
-const LEGACY_KEYS = ['eas-products-v090', 'eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
-const SETTINGS_KEY = 'eas-settings-v100';
-const LEGACY_SETTINGS_KEYS = ['eas-settings-v090', 'eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
+const STORAGE_KEY = 'eas-products-v101';
+const LEGACY_KEYS = ['eas-products-v100', 'eas-products-v090', 'eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
+const SETTINGS_KEY = 'eas-settings-v101';
+const LEGACY_SETTINGS_KEYS = ['eas-settings-v100', 'eas-settings-v090', 'eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
 
 const defaults = {
   exchangeRate: 1390,
@@ -43,7 +43,7 @@ let products = migrateValue(STORAGE_KEY, LEGACY_KEYS, []);
 let route = 'dashboard';
 let editingId = null;
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const app = document.querySelector('#app');
 const title = document.querySelector('#page-title');
 const photoInput = document.querySelector('#photo-input');
@@ -104,46 +104,101 @@ function cleanAiText(value, max = 120) {
   return String(value || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
 }
 
+function normalizeAiValue(value, max = 120) {
+  const cleaned = cleanAiText(value, max);
+  return /^(unknown|n\/a|not sure|미상|확인 불가)$/i.test(cleaned) ? '' : cleaned;
+}
+
+function aiConditionLabel(condition) {
+  return ({ NEW: '새상품 추정', USED: '중고 추정', UNKNOWN: '상태 확인 필요' })[condition] || '상태 확인 필요';
+}
+
 function buildSearchKeyword(data = {}) {
   return [data.brand, data.productName, data.color, data.category, data.condition === 'NEW' ? 'New' : '']
-    .map((item) => cleanAiText(item, 50))
+    .map((item) => normalizeAiValue(item, 50))
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+class AiRequestError extends Error {
+  constructor(code, message, status = 0, retryable = false) {
+    super(message || code);
+    this.name = 'AiRequestError';
+    this.code = code;
+    this.status = status;
+    this.retryable = retryable;
+  }
+}
+
 async function requestAiAnalysis({ photos, barcode, brand, productName }) {
   const endpoint = String(settings.aiEndpoint || '').trim();
-  if (!endpoint) throw new Error('AI_ENDPOINT_MISSING');
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      app: 'EAS', version: APP_VERSION, barcode, brand, productName,
-      photos: (photos || []).slice(0, 3),
-      requestedFields: ['brand', 'productName', 'category', 'color', 'condition', 'confidence', 'searchKeyword', 'summary'],
-    }),
-  });
-  if (!response.ok) throw new Error(`AI_HTTP_${response.status}`);
-  const raw = await response.json();
+  if (!endpoint) throw new AiRequestError('AI_ENDPOINT_MISSING', 'AI 분석 서버 주소가 없습니다.');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        app: 'EAS', version: APP_VERSION, barcode, brand, productName,
+        photos: (photos || []).slice(0, 3),
+        requestedFields: ['brand', 'productName', 'category', 'color', 'condition', 'confidence', 'searchKeyword', 'summary'],
+      }),
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new AiRequestError('AI_TIMEOUT', 'AI 응답 시간이 초과되었습니다.', 0, true);
+    throw new AiRequestError('AI_NETWORK', 'AI 서버에 연결하지 못했습니다.', 0, true);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  let raw = null;
+  try {
+    raw = contentType.includes('application/json') ? await response.json() : { message: await response.text() };
+  } catch {
+    raw = {};
+  }
+
+  if (!response.ok) {
+    const serverMessage = normalizeAiValue(raw?.error || raw?.message || raw?.details, 220);
+    const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+    throw new AiRequestError(`AI_HTTP_${response.status}`, serverMessage || `AI 서버 오류 (${response.status})`, response.status, retryable);
+  }
+
   const condition = ['NEW', 'USED', 'UNKNOWN'].includes(String(raw.condition || '').toUpperCase())
     ? String(raw.condition).toUpperCase() : 'UNKNOWN';
   const confidence = Math.max(0, Math.min(100, Number(raw.confidence) || 0));
   const result = {
-    brand: cleanAiText(raw.brand, 60),
-    productName: cleanAiText(raw.productName || raw.model, 100),
-    category: cleanAiText(raw.category, 60),
-    color: cleanAiText(raw.color, 60),
+    brand: normalizeAiValue(raw.brand, 60),
+    productName: normalizeAiValue(raw.productName || raw.model, 100),
+    category: normalizeAiValue(raw.category, 60),
+    color: normalizeAiValue(raw.color, 60),
     condition, confidence,
-    searchKeyword: cleanAiText(raw.searchKeyword, 180),
-    summary: cleanAiText(raw.summary, 400),
+    searchKeyword: normalizeAiValue(raw.searchKeyword, 180),
+    summary: normalizeAiValue(raw.summary, 400),
     analyzedAt: new Date().toISOString(),
   };
   if (!result.searchKeyword) result.searchKeyword = buildSearchKeyword(result);
   return result;
 }
 
+function aiErrorPresentation(error) {
+  const code = String(error?.code || error?.message || 'AI_UNKNOWN');
+  const status = Number(error?.status) || 0;
+  if (code === 'AI_ENDPOINT_MISSING') return { title: '서버 주소 확인 필요', detail: '설정의 AI 분석 서버 주소를 확인해 주세요.', retry: false };
+  if (code === 'AI_TIMEOUT') return { title: '응답 시간 초과', detail: '사진 수를 줄이거나 잠시 후 다시 시도해 주세요.', retry: true };
+  if (code === 'AI_NETWORK') return { title: '연결 실패', detail: '인터넷 연결을 확인한 뒤 다시 시도해 주세요.', retry: true };
+  if (status === 429) return { title: 'AI 사용량 제한', detail: '잠시 기다린 뒤 다시 시도해 주세요. 무료 사용량 제한일 수 있습니다.', retry: true };
+  if (status === 503 || status === 502) return { title: 'AI 서버 혼잡', detail: 'Gemini 서버가 일시적으로 혼잡합니다. 잠시 후 재시도해 주세요.', retry: true };
+  if (status === 400) return { title: '사진 분석 요청 오류', detail: error.message || '사진을 다시 촬영하거나 사진 수를 줄여 주세요.', retry: true };
+  return { title: `AI 분석 실패${status ? ` (${status})` : ''}`, detail: error?.message || '잠시 후 다시 시도해 주세요.', retry: Boolean(error?.retryable) };
+}
 function buyConfidenceLabel(score) {
   if (score >= 80) return '높음';
   if (score >= 55) return '보통';
@@ -327,7 +382,7 @@ function renderEditor() {
       <div class="field"><label for="barcode">상품 바코드 (UPC / EAN)</label><div class="input-with-action"><input id="barcode" inputmode="numeric" value="${esc(product.barcode)}" placeholder="8·12·13자리"><button type="button" id="barcode-photo" aria-label="바코드 촬영">▥</button></div><small class="helper" id="barcode-status">카메라로 촬영하거나 숫자를 직접 입력하세요.</small></div>
       <div class="ai-panel">
         <div class="row between"><div><p class="eyebrow">EAS AI ASSISTANT</p><h3>사진으로 상품 정보 분석</h3></div><span class="ai-beta">BETA</span></div>
-        <p class="muted tiny">대표 사진과 바코드를 AI 분석 서버로 보내 브랜드·상품명·색상·카테고리·검색어를 제안합니다.</p>
+        <p class="muted tiny">사진은 최대 3장까지 함께 분석합니다. 정면·측면·라벨 사진을 추가하면 모델 추론 정확도가 높아집니다.</p>
         <button type="button" class="primary full" id="ai-analyze">✨ AI 사진 분석</button>
         <div id="ai-result"></div>
       </div>
@@ -417,18 +472,18 @@ function renderEditor() {
   function drawAiResult(ai = product.ai) {
     if (!ai) { aiResultHolder.innerHTML = ''; return; }
     aiResultHolder.innerHTML = `<div class="ai-result-card">
-      <div class="row between"><strong>${esc(ai.condition || 'UNKNOWN')}</strong><span>${Math.round(Number(ai.confidence) || 0)}% 신뢰도</span></div>
+      <div class="row between"><strong>${esc(aiConditionLabel(ai.condition))}</strong><span>${Math.round(Number(ai.confidence) || 0)}% 신뢰도</span></div>
       ${ai.summary ? `<p>${esc(ai.summary)}</p>` : ''}
       <small>${ai.analyzedAt ? `분석: ${new Date(ai.analyzedAt).toLocaleString('ko-KR')}` : ''}</small>
     </div>`;
   }
   drawAiResult();
-  document.querySelector('#ai-analyze').onclick = async () => {
+  async function runAiAnalysis() {
     const button = document.querySelector('#ai-analyze');
     if (!photos.length) { alert('AI 분석 전에 상품 사진을 한 장 이상 촬영해 주세요.'); return; }
     button.disabled = true;
     button.textContent = 'AI 분석 중…';
-    aiResultHolder.innerHTML = '<div class="inline-hint">사진을 분석하고 있습니다. 잠시만 기다려 주세요.</div>';
+    aiResultHolder.innerHTML = `<div class="inline-hint">사진 ${Math.min(photos.length, 3)}장을 분석하고 있습니다. 잠시만 기다려 주세요.</div>`;
     try {
       const ai = await requestAiAnalysis({ photos, barcode: val('barcode'), brand: val('brand'), productName: val('productName') });
       product.ai = ai;
@@ -441,16 +496,15 @@ function renderEditor() {
       navigator.vibrate?.(80);
     } catch (error) {
       console.error('AI analysis', error);
-      if (String(error.message) === 'AI_ENDPOINT_MISSING') {
-        aiResultHolder.innerHTML = '<div class="ai-warning">설정의 AI 분석 서버 주소를 확인해 주세요. API 비밀키는 앱에 저장되지 않습니다.</div>';
-      } else {
-        aiResultHolder.innerHTML = '<div class="ai-warning">AI 분석에 실패했습니다. 서버 주소와 인터넷 연결을 확인해 주세요.</div>';
-      }
+      const view = aiErrorPresentation(error);
+      aiResultHolder.innerHTML = `<div class="ai-warning"><strong>${esc(view.title)}</strong><p>${esc(view.detail)}</p>${view.retry ? '<button type="button" class="secondary full" id="ai-retry">다시 분석</button>' : ''}</div>`;
+      document.querySelector('#ai-retry')?.addEventListener('click', runAiAnalysis);
     } finally {
       button.disabled = false;
       button.textContent = '✨ AI 사진 분석';
     }
-  };
+  }
+  document.querySelector('#ai-analyze').onclick = runAiAnalysis;
   document.querySelector('#open-ebay').onclick = () => {
     const keyword = val('searchKeyword').trim() || buildSearchKeyword({ brand: val('brand'), productName: val('productName'), color: val('color'), category: val('category'), condition: product.ai?.condition });
     if (!keyword) { alert('검색어를 입력하거나 AI 분석을 먼저 실행해 주세요.'); return; }
@@ -594,7 +648,7 @@ function renderDetail() {
       ${product.photos?.length ? `<div class="detail-photo"><img src="${product.photos[0]}" alt="상품 사진"></div>${product.photos.length > 1 ? `<div class="detail-gallery">${product.photos.map((src, index) => `<button type="button" data-gallery-photo="${index}"><img src="${src}" alt="상품 사진 ${index + 1}"></button>`).join('')}</div>` : ''}` : ''}
       <h2>${esc(name)}</h2>
       <p class="muted">${esc(product.barcode || '바코드 없음')}</p>
-      ${product.ai ? `<div class="ai-result-card detail-ai"><div class="row between"><strong>AI ${esc(product.ai.condition || 'UNKNOWN')}</strong><span>${Math.round(Number(product.ai.confidence)||0)}%</span></div>${product.ai.summary ? `<p>${esc(product.ai.summary)}</p>` : ''}${product.searchKeyword ? `<button class="text-button" type="button" id="detail-ebay">eBay 새상품 검색 ↗</button>` : ''}</div>` : ''}
+      ${product.ai ? `<div class="ai-result-card detail-ai"><div class="row between"><strong>AI ${esc(aiConditionLabel(product.ai.condition))}</strong><span>${Math.round(Number(product.ai.confidence)||0)}%</span></div>${product.ai.summary ? `<p>${esc(product.ai.summary)}</p>` : ''}${product.searchKeyword ? `<button class="text-button" type="button" id="detail-ebay">eBay 새상품 검색 ↗</button>` : ''}</div>` : ''}
       <dl class="detail-list">
         <div><dt>매입가</dt><dd>${won(product.purchasePrice)}</dd></div>
         <div><dt>판매가</dt><dd>${usd(product.sellingPrice)}</dd></div>
