@@ -9,8 +9,9 @@
   <meta name="apple-mobile-web-app-title" content="EAS" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="styles.css" />
-  <title>EAS</title>
+  <link rel="stylesheet" href="styles.css?v=080" />
+  <meta name="application-name" content="EAS v0.8.0" />
+  <title>EAS v0.8.0</title>
 </head>
 <body>
   <div class="app-shell">
@@ -31,7 +32,8 @@
       <button data-route="settings"><span>⚙</span><small>설정</small></button>
     </nav>
   </div>
-  <input id="photo-input" type="file" accept="image/*" capture="environment" multiple hidden />
-  <script src="app.js" defer></script>
+  <input id="photo-input" type="file" accept="image/*" capture="environment" hidden />
+  <input id="barcode-image-input" type="file" accept="image/*" capture="environment" hidden />
+  <script src="app.js?v=080" defer></script>
 </body>
 </html>

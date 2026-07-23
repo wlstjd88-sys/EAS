@@ -1,7 +1,7 @@
-const STORAGE_KEY = 'eas-products-v061';
-const LEGACY_KEYS = ['eas-products-v040'];
-const SETTINGS_KEY = 'eas-settings-v061';
-const LEGACY_SETTINGS_KEYS = ['eas-settings-v040'];
+const STORAGE_KEY = 'eas-products-v080';
+const LEGACY_KEYS = ['eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
+const SETTINGS_KEY = 'eas-settings-v080';
+const LEGACY_SETTINGS_KEYS = ['eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
 
 const defaults = {
   exchangeRate: 1390,
@@ -42,9 +42,11 @@ let products = migrateValue(STORAGE_KEY, LEGACY_KEYS, []);
 let route = 'dashboard';
 let editingId = null;
 
+const APP_VERSION = '0.8.0';
 const app = document.querySelector('#app');
 const title = document.querySelector('#page-title');
 const photoInput = document.querySelector('#photo-input');
+const barcodeImageInput = document.querySelector('#barcode-image-input');
 
 const won = (n) => new Intl.NumberFormat('ko-KR', {
   style: 'currency', currency: 'KRW', maximumFractionDigits: 0,
@@ -52,8 +54,18 @@ const won = (n) => new Intl.NumberFormat('ko-KR', {
 const usd = (n) => new Intl.NumberFormat('en-US', {
   style: 'currency', currency: 'USD', maximumFractionDigits: 2,
 }).format(Number(n) || 0);
-const save = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(products));
-const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+function persist(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    console.error('localStorage 저장 실패', error);
+    alert('기기 저장 공간이 부족해 저장하지 못했습니다. 사진 수를 줄이거나 설정에서 데이터를 백업한 뒤 불필요한 상품을 삭제해 주세요.');
+    return false;
+  }
+}
+const save = () => persist(STORAGE_KEY, products);
+const saveSettings = () => persist(SETTINGS_KEY, settings);
 
 function esc(value = '') {
   return String(value).replace(/[&<>"']/g, (char) => ({
@@ -63,6 +75,34 @@ function esc(value = '') {
 function val(id) { return document.querySelector(`#${id}`)?.value ?? ''; }
 function num(id) { return Number(val(id)) || 0; }
 function uid() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
+
+
+function normalizeBarcode(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function barcodeKind(value) {
+  const code = normalizeBarcode(value);
+  if (code.length === 8) return 'EAN-8';
+  if (code.length === 12) return 'UPC-A';
+  if (code.length === 13) return 'EAN-13';
+  return '';
+}
+
+function isValidGtin(value) {
+  const code = normalizeBarcode(value);
+  if (![8, 12, 13].includes(code.length)) return false;
+  const digits = [...code].map(Number);
+  const check = digits.pop();
+  const sum = digits.reverse().reduce((total, digit, index) => total + digit * (index % 2 === 0 ? 3 : 1), 0);
+  return ((10 - (sum % 10)) % 10) === check;
+}
+
+function buyConfidenceLabel(score) {
+  if (score >= 80) return '높음';
+  if (score >= 55) return '보통';
+  return '낮음';
+}
 
 function calculate(input) {
   const purchasePrice = Number(input.purchasePrice) || 0;
@@ -238,7 +278,7 @@ function renderEditor() {
       </div>
       <div class="field"><label for="brand">브랜드</label><input id="brand" autocomplete="organization" value="${esc(product.brand)}" placeholder="예: Nike"></div>
       <div class="field"><label for="productName">상품명 / 모델</label><input id="productName" value="${esc(product.productName || product.model || '')}" placeholder="예: Air Max 97"></div>
-      <div class="field"><label for="barcode">바코드 / UPC</label><div class="input-with-action"><input id="barcode" inputmode="numeric" value="${esc(product.barcode)}" placeholder="숫자를 입력하세요"><button type="button" id="barcode-photo">📷</button></div><small class="helper">현재 버전은 직접 입력 방식입니다.</small></div>
+      <div class="field"><label for="barcode">상품 바코드 (UPC / EAN)</label><div class="input-with-action"><input id="barcode" inputmode="numeric" value="${esc(product.barcode)}" placeholder="8·12·13자리"><button type="button" id="barcode-photo" aria-label="바코드 촬영">▥</button></div><small class="helper" id="barcode-status">카메라로 촬영하거나 숫자를 직접 입력하세요.</small></div>
     </section>
     <section class="card">
       <h2 class="form-title">2. 가격 입력</h2>
@@ -272,37 +312,96 @@ function renderEditor() {
   ['purchasePrice', 'sellingPrice', 'shipping', 'packing'].forEach((id) => document.querySelector(`#${id}`).addEventListener('input', drawLive));
   drawLive();
 
-  function rebindPhotoButtons() {
-    document.querySelectorAll('[data-remove-photo]').forEach((button) => {
-      button.onclick = () => { photos.splice(Number(button.dataset.removePhoto), 1); renderEditorWithPhotos(); };
-    });
-  }
-  function renderEditorWithPhotos() {
-    product.photos = photos;
-    const draft = {
-      ...product,
-      brand: val('brand'), productName: val('productName'), barcode: val('barcode'),
-      purchasePrice: num('purchasePrice'), sellingPrice: num('sellingPrice'),
-      shipping: num('shipping'), packing: num('packing'), notes: val('notes'), photos,
-    };
-    const tempId = product.id;
-    products = products.filter((item) => item.id !== '__temporary__');
-    Object.assign(product, draft, { id: tempId });
-    renderEditor();
-  }
-  rebindPhotoButtons();
+  function renderPhotoGrid(message = '') {
+    const grid = document.querySelector('#photos');
+    if (!grid) return;
+    const hero = photos[0]
+      ? `<div class="photo-hero"><img src="${photos[0]}" alt="대표 상품 사진"><span>대표 사진</span></div>`
+      : `<div class="photo-empty"><span>📷</span><b>상품 사진을 촬영해 주세요</b><small>촬영 후 이 영역에 바로 표시됩니다.</small></div>`;
+    grid.innerHTML = `${hero}
+      <div class="photo-thumbs">
+        ${photos.map((src, index) => `<div class="photo"><img src="${src}" alt="상품 사진 ${index + 1}"><button type="button" data-remove-photo="${index}" aria-label="사진 삭제">×</button></div>`).join('')}
+        ${photos.length < 6 ? `<button type="button" class="photo-add" id="add-photo"><span>📷</span><b>${photos.length ? '사진 추가' : '사진 촬영'}</b></button>` : ''}
+      </div>
+      <p class="photo-status ${message ? '' : 'hidden'}" id="photo-status">${esc(message)}</p>`;
 
-  document.querySelector('#add-photo').onclick = () => photoInput.click();
-  document.querySelector('#barcode-photo').onclick = () => {
-    alert('바코드 사진 인식은 다음 버전에서 연결합니다. 지금은 번호를 직접 입력해 주세요.');
-    document.querySelector('#barcode').focus();
+    grid.querySelectorAll('[data-remove-photo]').forEach((button) => {
+      button.onclick = () => {
+        photos.splice(Number(button.dataset.removePhoto), 1);
+        renderPhotoGrid();
+      };
+    });
+    const addPhoto = grid.querySelector('#add-photo');
+    if (addPhoto) addPhoto.onclick = () => photoInput.click();
+  }
+  renderPhotoGrid();
+
+  const barcodeField = document.querySelector('#barcode');
+  const barcodeStatus = document.querySelector('#barcode-status');
+  function validateBarcode(showAlert = false) {
+    const code = normalizeBarcode(barcodeField.value);
+    barcodeField.value = code;
+    if (!code) {
+      barcodeStatus.textContent = '카메라로 촬영하거나 숫자를 직접 입력하세요.';
+      barcodeStatus.className = 'helper';
+      return true;
+    }
+    const kind = barcodeKind(code);
+    const valid = kind && isValidGtin(code);
+    barcodeStatus.textContent = valid ? `${kind} 형식 확인 완료` : '8·12·13자리 상품 바코드와 체크 숫자를 확인해 주세요.';
+    barcodeStatus.className = valid ? 'helper barcode-ok' : 'helper barcode-error';
+    if (!valid && showAlert) alert('올바른 UPC/EAN 상품 바코드인지 확인해 주세요.');
+    return Boolean(valid);
+  }
+  barcodeField.addEventListener('input', () => validateBarcode(false));
+  validateBarcode(false);
+  document.querySelector('#barcode-photo').onclick = () => barcodeImageInput.click();
+  barcodeImageInput.onchange = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    barcodeStatus.textContent = '바코드를 분석하고 있습니다…';
+    try {
+      if (!('BarcodeDetector' in window)) throw new Error('UNSUPPORTED');
+      const supported = await BarcodeDetector.getSupportedFormats();
+      const formats = ['ean_8', 'ean_13', 'upc_a', 'upc_e'].filter((format) => supported.includes(format));
+      const detector = new BarcodeDetector({ formats });
+      const bitmap = await createImageBitmap(file);
+      const results = await detector.detect(bitmap);
+      bitmap.close?.();
+      const match = results.map((item) => normalizeBarcode(item.rawValue)).find((code) => barcodeKind(code));
+      if (!match) throw new Error('NOT_FOUND');
+      barcodeField.value = match;
+      validateBarcode(true);
+      navigator.vibrate?.(80);
+    } catch (error) {
+      console.warn('barcode scan', error);
+      barcodeStatus.textContent = error.message === 'UNSUPPORTED'
+        ? '이 iPhone 브라우저는 자동 판독을 지원하지 않습니다. 바코드 아래 숫자를 직접 입력해 주세요.'
+        : '바코드를 찾지 못했습니다. 밝은 곳에서 정면으로 다시 촬영해 주세요.';
+      barcodeStatus.className = 'helper barcode-error';
+      barcodeField.focus();
+    }
   };
   photoInput.onchange = async (event) => {
     const selected = [...event.target.files].slice(0, Math.max(0, 6 - photos.length));
-    for (const file of selected) photos.push(await compress(file));
-    event.target.value = '';
-    product.photos = photos;
-    renderEditor();
+    if (!selected.length) return;
+
+    renderPhotoGrid('사진을 처리하고 있습니다…');
+    try {
+      for (const file of selected) {
+        const dataUrl = await preparePhoto(file);
+        if (dataUrl) photos.push(dataUrl);
+      }
+      product.photos = [...photos];
+      renderPhotoGrid(photos.length ? '사진이 정상적으로 추가되었습니다.' : '사진을 추가하지 못했습니다.');
+    } catch (error) {
+      console.error(error);
+      renderPhotoGrid('사진을 불러오지 못했습니다. 다시 촬영해 주세요.');
+      alert('사진을 불러오지 못했습니다. 다시 촬영하거나 사진 보관함에서 선택해 주세요.');
+    } finally {
+      event.target.value = '';
+    }
   };
   document.querySelector('#cancel').onclick = () => nav(existing ? 'products' : 'dashboard');
   document.querySelector('#product-form').onsubmit = (event) => {
@@ -311,6 +410,7 @@ function renderEditor() {
       alert('매입가와 판매가를 입력해 주세요.');
       return;
     }
+    if (val('barcode').trim() && !validateBarcode(true)) return;
     const data = {
       ...product,
       id: existing?.id || product.id,
@@ -328,7 +428,7 @@ function renderEditor() {
     data.result = calculate({ ...settings, ...data });
     const index = products.findIndex((item) => item.id === data.id);
     if (index >= 0) products[index] = data; else products.push(data);
-    save();
+    if (!save()) return;
     editingId = data.id;
     route = 'detail';
     render();
@@ -345,7 +445,7 @@ function resultCompact(result) {
 
 function resultFull(result) {
   return `<section class="result-hero decision-bg-${result.decision.toLowerCase()}">
-    <div class="row between"><div><span class="result-label">매입 판정</span><div class="result-decision">${result.decision}</div></div><div class="score-ring"><strong>${result.score}</strong><small>BUY SCORE</small></div></div>
+    <div class="row between"><div><span class="result-label">매입 판정</span><div class="result-decision">${result.decision}</div></div><div class="score-ring"><strong>${result.score}</strong><small>BUY CONFIDENCE</small></div></div>
     <div class="result-grid">
       <div class="result-cell"><span>판매 매출</span><strong>${won(result.salesKrw)}</strong></div>
       <div class="result-cell"><span>예상 순이익</span><strong>${won(result.profit)}</strong></div>
@@ -363,7 +463,7 @@ function renderDetail() {
   app.innerHTML = `
     ${resultFull(product.result)}
     <section class="card detail-card">
-      ${product.photos?.length ? `<div class="detail-photo"><img src="${product.photos[0]}" alt="상품 사진"></div>` : ''}
+      ${product.photos?.length ? `<div class="detail-photo"><img src="${product.photos[0]}" alt="상품 사진"></div>${product.photos.length > 1 ? `<div class="detail-gallery">${product.photos.map((src, index) => `<button type="button" data-gallery-photo="${index}"><img src="${src}" alt="상품 사진 ${index + 1}"></button>`).join('')}</div>` : ''}` : ''}
       <h2>${esc(name)}</h2>
       <p class="muted">${esc(product.barcode || '바코드 없음')}</p>
       <dl class="detail-list">
@@ -372,16 +472,22 @@ function renderDetail() {
         <div><dt>수수료·충당금</dt><dd>${won(product.result.variableFees + product.result.fixedFeeKrw)}</dd></div>
         <div><dt>배송·포장</dt><dd>${won(product.shipping + product.packing)}</dd></div>
         <div><dt>손익분기 판매가</dt><dd>${usd(product.result.breakEven)}</dd></div>
+        <div><dt>구매 확신도</dt><dd>${buyConfidenceLabel(product.result.score)} · ${product.result.score}/100</dd></div>
       </dl>
       ${product.notes ? `<div class="note-box">${esc(product.notes)}</div>` : ''}
     </section>
     <div class="actions"><button class="danger" id="delete">삭제</button><button class="primary" id="edit">편집</button></div>`;
+  document.querySelectorAll('[data-gallery-photo]').forEach((button) => {
+    button.onclick = () => {
+      const image = document.querySelector('.detail-photo img');
+      if (image) image.src = product.photos[Number(button.dataset.galleryPhoto)];
+    };
+  });
   document.querySelector('#edit').onclick = () => openEditor(product.id);
   document.querySelector('#delete').onclick = () => {
     if (confirm('이 상품을 삭제할까요?')) {
       products = products.filter((item) => item.id !== product.id);
-      save();
-      nav('products');
+      if (save()) nav('products');
     }
   };
 }
@@ -406,18 +512,20 @@ function renderSettings() {
     <div class="field"><label for="exchangeRate">환율 (1 USD → KRW)</label><input id="exchangeRate" type="number" value="${settings.exchangeRate}"></div>
     <div class="two-col"><div class="field"><label for="feeRate">eBay 수수료 (%)</label><input id="feeRate" type="number" step="0.01" value="${settings.feeRate}"></div><div class="field"><label for="adRate">광고율 (%)</label><input id="adRate" type="number" step="0.1" value="${settings.adRate}"></div></div>
     <div class="two-col"><div class="field"><label for="returnReserveRate">반품 충당률 (%)</label><input id="returnReserveRate" type="number" step="0.1" value="${settings.returnReserveRate}"></div><div class="field"><label for="fixedFeeUsd">고정 수수료 (USD)</label><input id="fixedFeeUsd" type="number" step="0.01" value="${settings.fixedFeeUsd}"></div></div>
+    <div class="two-col"><div class="field"><label for="internationalShipping">기본 국제배송비 (KRW)</label><input id="internationalShipping" type="number" value="${settings.internationalShipping}"></div><div class="field"><label for="packingCost">기본 포장비 (KRW)</label><input id="packingCost" type="number" value="${settings.packingCost}"></div></div>
     <div class="two-col"><div class="field"><label for="targetProfit">목표 순이익</label><input id="targetProfit" type="number" value="${settings.targetProfit}"></div><div class="field"><label for="targetRoi">목표 ROI (%)</label><input id="targetRoi" type="number" value="${settings.targetRoi}"></div></div>
     <button class="primary full" id="save-settings">설정 저장</button>
   </section>
+  <section class="card install-note"><strong>계산 기준</strong><p>수수료, 광고율, 반품 충당률, 배송비와 포장비는 모두 직접 수정 가능한 기본값입니다. 상품 등록 화면에서 상품별 비용도 별도로 바꿀 수 있습니다.</p></section>
   <section class="card install-note"><strong>아이폰 설치 방법</strong><p>Safari에서 배포 주소를 연 뒤 공유 → 홈 화면에 추가를 누르세요. 상품 데이터는 이 기기에 저장됩니다.</p></section>
   <section class="card"><button class="secondary full" id="export-data">데이터 내보내기</button></section>`;
   document.querySelector('#save-settings').onclick = () => {
-    ['exchangeRate', 'feeRate', 'adRate', 'returnReserveRate', 'fixedFeeUsd', 'targetProfit', 'targetRoi'].forEach((key) => { settings[key] = num(key); });
+    ['exchangeRate', 'feeRate', 'adRate', 'returnReserveRate', 'fixedFeeUsd', 'internationalShipping', 'packingCost', 'targetProfit', 'targetRoi'].forEach((key) => { settings[key] = num(key); });
     saveSettings();
     alert('설정을 저장했습니다.');
   };
   document.querySelector('#export-data').onclick = () => {
-    const blob = new Blob([JSON.stringify({ version: '0.6.1', exportedAt: new Date().toISOString(), settings, products }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ version: APP_VERSION, exportedAt: new Date().toISOString(), settings, products }, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `EAS-backup-${new Date().toISOString().slice(0, 10)}.json`;
@@ -426,24 +534,48 @@ function renderSettings() {
   };
 }
 
-async function compress(file) {
+function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
-    const image = new Image();
-    const url = URL.createObjectURL(file);
-    image.onload = () => {
-      const max = 1400;
-      const scale = Math.min(1, max / Math.max(image.width, image.height));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(image.width * scale);
-      canvas.height = Math.round(image.height * scale);
-      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL('image/jpeg', 0.76));
-    };
-    image.onerror = reject;
-    image.src = url;
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('파일 읽기 실패'));
+    reader.readAsDataURL(file);
   });
 }
+
+async function preparePhoto(file) {
+  const original = await readFileAsDataUrl(file);
+  try {
+    return await compressDataUrl(original);
+  } catch (error) {
+    console.warn('사진 압축 실패, 원본 사용', error);
+    return original;
+  }
+}
+
+function compressDataUrl(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const max = 1280;
+        const scale = Math.min(1, max / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+        canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Canvas unavailable');
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.72));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    image.onerror = () => reject(new Error('이미지 디코딩 실패'));
+    image.src = source;
+  });
+}
+
 
 document.querySelectorAll('.bottom-nav button').forEach((button) => { button.onclick = () => nav(button.dataset.route); });
 document.querySelector('#new-product-top').onclick = () => openEditor();
