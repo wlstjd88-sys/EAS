@@ -1,7 +1,7 @@
-const STORAGE_KEY = 'eas-products-v110';
-const LEGACY_KEYS = ['eas-products-v101', 'eas-products-v100', 'eas-products-v090', 'eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
-const SETTINGS_KEY = 'eas-settings-v110';
-const LEGACY_SETTINGS_KEYS = ['eas-settings-v101', 'eas-settings-v100', 'eas-settings-v090', 'eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
+const STORAGE_KEY = 'eas-products-v111';
+const LEGACY_KEYS = ['eas-products-v110', 'eas-products-v101', 'eas-products-v100', 'eas-products-v090', 'eas-products-v080', 'eas-products-v070', 'eas-products-v061', 'eas-products-v040'];
+const SETTINGS_KEY = 'eas-settings-v111';
+const LEGACY_SETTINGS_KEYS = ['eas-settings-v110', 'eas-settings-v101', 'eas-settings-v100', 'eas-settings-v090', 'eas-settings-v080', 'eas-settings-v070', 'eas-settings-v061', 'eas-settings-v040'];
 
 const defaults = {
   exchangeRate: 1390,
@@ -50,7 +50,7 @@ let products = migrateValue(STORAGE_KEY, LEGACY_KEYS, []);
 let route = 'dashboard';
 let editingId = null;
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const app = document.querySelector('#app');
 const title = document.querySelector('#page-title');
 const photoInput = document.querySelector('#photo-input');
@@ -130,7 +130,7 @@ function aiResultHeadline(ai = {}) {
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function requestAiAnalysisWithRetry(payload, onRetry) {
-  const maxAttempts = 3;
+  const maxAttempts = 2; // 최초 요청 + 조건부 자동 재시도 1회
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -138,7 +138,12 @@ async function requestAiAnalysisWithRetry(payload, onRetry) {
     } catch (error) {
       lastError = error;
       if (!error?.retryable || attempt >= maxAttempts) throw error;
-      const delay = attempt === 1 ? 1400 : 3200;
+
+      // 429는 서버가 알려준 대기 시간을 우선 사용합니다. 연속 재시도로 무료 한도를 낭비하지 않습니다.
+      const baseDelay = error.status === 429
+        ? Math.max(1000, Math.min(30000, Number(error.retryAfterMs) || 10000))
+        : 3000;
+      const delay = baseDelay + Math.floor(Math.random() * 700);
       onRetry?.(attempt + 1, maxAttempts, delay, error);
       await sleep(delay);
     }
@@ -195,13 +200,24 @@ function buildSearchKeyword(data = {}) {
 }
 
 class AiRequestError extends Error {
-  constructor(code, message, status = 0, retryable = false) {
+  constructor(code, message, status = 0, retryable = false, retryAfterMs = 0) {
     super(message || code);
     this.name = 'AiRequestError';
     this.code = code;
     this.status = status;
     this.retryable = retryable;
+    this.retryAfterMs = Math.max(0, Number(retryAfterMs) || 0);
   }
+}
+
+function parseRetryAfterMs(response, raw) {
+  const header = Number(response.headers.get('retry-after'));
+  if (Number.isFinite(header) && header > 0) return Math.ceil(header * 1000);
+  const bodySeconds = Number(raw?.retryAfterSeconds);
+  if (Number.isFinite(bodySeconds) && bodySeconds > 0) return Math.ceil(bodySeconds * 1000);
+  const text = String(raw?.message || raw?.details || '');
+  const match = /retry(?:\s+in|Delay[^0-9]*)?\s*([0-9]+(?:\.[0-9]+)?)\s*s/i.exec(text);
+  return match ? Math.ceil(Number(match[1]) * 1000) : 0;
 }
 
 async function requestAiAnalysis({ photos, barcode, brand, productName }) {
@@ -238,9 +254,16 @@ async function requestAiAnalysis({ photos, barcode, brand, productName }) {
   }
 
   if (!response.ok) {
-    const serverMessage = normalizeAiValue(raw?.error || raw?.message || raw?.details, 220);
+    const serverMessage = normalizeAiValue(raw?.message || raw?.error || raw?.details, 300);
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-    throw new AiRequestError(`AI_HTTP_${response.status}`, serverMessage || `AI 서버 오류 (${response.status})`, response.status, retryable);
+    const retryAfterMs = parseRetryAfterMs(response, raw);
+    throw new AiRequestError(
+      `AI_HTTP_${response.status}`,
+      serverMessage || `AI 서버 오류 (${response.status})`,
+      response.status,
+      retryable,
+      retryAfterMs,
+    );
   }
 
   const condition = ['NEW', 'USED', 'UNKNOWN'].includes(String(raw.condition || '').toUpperCase())
@@ -268,7 +291,10 @@ function aiErrorPresentation(error) {
   if (code === 'AI_ENDPOINT_MISSING') return { title: '서버 주소 확인 필요', detail: '설정의 AI 분석 서버 주소를 확인해 주세요.', retry: false };
   if (code === 'AI_TIMEOUT') return { title: '응답 시간 초과', detail: '사진 수를 줄이거나 잠시 후 다시 시도해 주세요.', retry: true };
   if (code === 'AI_NETWORK') return { title: '연결 실패', detail: '인터넷 연결을 확인한 뒤 다시 시도해 주세요.', retry: true };
-  if (status === 429) return { title: 'AI 사용량 제한', detail: '잠시 기다린 뒤 다시 시도해 주세요. 무료 사용량 제한일 수 있습니다.', retry: true };
+  if (status === 429) {
+    const seconds = Math.max(1, Math.ceil((Number(error?.retryAfterMs) || 10000) / 1000));
+    return { title: 'Gemini 무료 사용량 제한', detail: `요청 한도에 도달했습니다. 약 ${seconds}초 후 다시 시도해 주세요.`, retry: true, cooldownSeconds: seconds };
+  }
   if (status === 503 || status === 502) return { title: 'AI 서버 혼잡', detail: 'Gemini 서버가 일시적으로 혼잡합니다. 잠시 후 재시도해 주세요.', retry: true };
   if (status === 400) return { title: '사진 분석 요청 오류', detail: error.message || '사진을 다시 촬영하거나 사진 수를 줄여 주세요.', retry: true };
   return { title: `AI 분석 실패${status ? ` (${status})` : ''}`, detail: error?.message || '잠시 후 다시 시도해 주세요.', retry: Boolean(error?.retryable) };
@@ -561,9 +587,11 @@ function renderEditor() {
     try {
       const ai = await requestAiAnalysisWithRetry(
         { photos, barcode: val('barcode'), brand: val('brand'), productName: val('productName') },
-        (attempt, maxAttempts, delay) => {
-          button.textContent = `AI 재시도 중… (${attempt}/${maxAttempts})`;
-          aiResultHolder.innerHTML = `<div class="inline-hint">AI 서버 응답이 불안정해 ${Math.round(delay / 100) / 10}초 후 자동으로 다시 시도합니다.</div>`;
+        (attempt, maxAttempts, delay, retryError) => {
+          const seconds = Math.max(1, Math.ceil(delay / 1000));
+          button.textContent = `AI 대기 중… (${attempt}/${maxAttempts})`;
+          const reason = retryError?.status === 429 ? 'Gemini 요청 한도' : 'AI 서버 응답 불안정';
+          aiResultHolder.innerHTML = `<div class="inline-hint"><strong>${esc(reason)}</strong><br>${seconds}초 뒤 한 번만 자동 재시도합니다. 요청 횟수를 아끼기 위해 추가 연속 재시도는 하지 않습니다.</div>`;
         },
       );
       product.ai = ai;
@@ -577,8 +605,23 @@ function renderEditor() {
     } catch (error) {
       console.error('AI analysis', error);
       const view = aiErrorPresentation(error);
-      aiResultHolder.innerHTML = `<div class="ai-warning"><strong>${esc(view.title)}</strong><p>${esc(view.detail)}</p>${view.retry ? '<button type="button" class="secondary full" id="ai-retry">다시 분석</button>' : ''}</div>`;
-      document.querySelector('#ai-retry')?.addEventListener('click', runAiAnalysis);
+      const retryLabel = view.cooldownSeconds ? `${view.cooldownSeconds}초 후 다시 분석` : '다시 분석';
+      aiResultHolder.innerHTML = `<div class="ai-warning"><strong>${esc(view.title)}</strong><p>${esc(view.detail)}</p>${view.retry ? `<button type="button" class="secondary full" id="ai-retry" ${view.cooldownSeconds ? 'disabled' : ''}>${esc(retryLabel)}</button>` : ''}</div>`;
+      const retryButton = document.querySelector('#ai-retry');
+      if (retryButton && view.cooldownSeconds) {
+        let remaining = view.cooldownSeconds;
+        const timer = setInterval(() => {
+          remaining -= 1;
+          if (remaining <= 0) {
+            clearInterval(timer);
+            retryButton.disabled = false;
+            retryButton.textContent = '다시 분석';
+            return;
+          }
+          retryButton.textContent = `${remaining}초 후 다시 분석`;
+        }, 1000);
+      }
+      retryButton?.addEventListener('click', runAiAnalysis);
     } finally {
       button.disabled = false;
       button.textContent = '✨ AI 사진 분석';
