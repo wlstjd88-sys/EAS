@@ -1,161 +1,272 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>EAS - Coupang Sourcing</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      max-width: 760px;
-      margin: 40px auto;
-      padding: 0 20px;
-      background: #f5f7fa;
-      color: #111827;
-    }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    h1 { margin-bottom: 4px; }
+<title>EAS AI Product Sourcing</title>
 
-    .sub {
-      color: #6b7280;
-      margin-bottom: 24px;
-    }
+<style>
+body{
+font-family:Arial,sans-serif;
+background:#f5f6fa;
+margin:0;
+padding:30px;
+}
 
-    .card {
-      background: white;
-      padding: 24px;
-      border-radius: 14px;
-      box-shadow: 0 4px 18px rgba(0,0,0,.08);
-      margin-bottom: 20px;
-    }
+.container{
+max-width:900px;
+margin:auto;
+}
 
-    label {
-      display: block;
-      font-weight: bold;
-      margin: 14px 0 6px;
-    }
+h1{
+margin-bottom:5px;
+}
 
-    input {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 12px;
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      font-size: 16px;
-    }
+.subtitle{
+color:#666;
+margin-bottom:25px;
+}
 
-    button {
-      margin-top: 20px;
-      width: 100%;
-      padding: 14px;
-      border: 0;
-      border-radius: 9px;
-      background: #111827;
-      color: white;
-      font-size: 17px;
-      font-weight: bold;
-      cursor: pointer;
-    }
+.card{
+background:white;
+padding:25px;
+border-radius:15px;
+box-shadow:0 3px 12px rgba(0,0,0,.08);
+}
 
-    .result {
-      font-size: 18px;
-      line-height: 1.8;
-    }
+input{
+width:100%;
+padding:14px;
+font-size:16px;
+margin-top:10px;
+margin-bottom:20px;
+border:1px solid #ddd;
+border-radius:8px;
+box-sizing:border-box;
+}
 
-    .decision {
-      font-size: 28px;
-      font-weight: bold;
-      margin-bottom: 12px;
-    }
-  </style>
+button{
+width:100%;
+padding:16px;
+font-size:18px;
+background:#0066ff;
+color:white;
+border:none;
+border-radius:8px;
+cursor:pointer;
+}
+
+button:hover{
+background:#004fcc;
+}
+
+table{
+width:100%;
+margin-top:30px;
+border-collapse:collapse;
+background:white;
+}
+
+th,td{
+padding:12px;
+border:1px solid #ddd;
+text-align:center;
+}
+
+th{
+background:#0066ff;
+color:white;
+}
+
+.good{
+color:green;
+font-weight:bold;
+}
+
+.bad{
+color:red;
+font-weight:bold;
+}
+</style>
+
 </head>
 
 <body>
 
-  <h1>EAS</h1>
-  <div class="sub">Costco → Coupang AI Sourcing Engine v0.1</div>
+<div class="container">
 
-  <div class="card">
-    <label>상품명</label>
-    <input id="name" placeholder="예: 선크림 2개 세트">
+<h1>🚀 EAS AI Product Sourcing</h1>
 
-    <label>코스트코 매입가 (원)</label>
-    <input id="cost" type="number" placeholder="19990">
+<div class="subtitle">
+Costco → Coupang AI 분석
+</div>
 
-    <label>쿠팡 예상 판매가 (원)</label>
-    <input id="sale" type="number" placeholder="34900">
+<div class="card">
 
-    <label>쿠팡 판매수수료 (%)</label>
-    <input id="fee" type="number" step="0.1" value="10.8">
+<label><b>코스트코 상품 URL</b></label>
 
-    <label>배송비 (원)</label>
-    <input id="shipping" type="number" value="3500">
+<input
+id="url"
+placeholder="https://www.costco.co.kr/...">
 
-    <label>포장비/기타비용 (원)</label>
-    <input id="other" type="number" value="500">
+<button onclick="analyze()">
+AI 분석 시작
+</button>
 
-    <button onclick="analyze()">AI 매입 분석</button>
-  </div>
+</div>
 
-  <div class="card result" id="result">
-    상품 정보를 입력하고 분석 버튼을 눌러주세요.
-  </div>
+<div id="result"></div>
+
+</div>
 
 <script>
-function won(n) {
-  return Math.round(n).toLocaleString("ko-KR") + "원";
+
+function analyze(){
+
+const url=document.getElementById("url").value;
+
+if(url==""){
+alert("상품 URL을 입력하세요.");
+return;
 }
 
-function analyze() {
-  const name = document.getElementById("name").value || "상품";
-  const cost = Number(document.getElementById("cost").value);
-  const sale = Number(document.getElementById("sale").value);
-  const feeRate = Number(document.getElementById("fee").value) / 100;
-  const shipping = Number(document.getElementById("shipping").value);
-  const other = Number(document.getElementById("other").value);
+document.getElementById("result").innerHTML=`
 
-  if (!cost || !sale) {
-    alert("매입가와 예상 판매가를 입력해주세요.");
-    return;
-  }
+<table>
 
-  const coupangFee = sale * feeRate;
-  const totalCost = cost + coupangFee + shipping + other;
-  const netProfit = sale - totalCost;
+<tr>
 
-  const margin = (netProfit / sale) * 100;
-  const roi = (netProfit / cost) * 100;
+<th>항목</th>
 
-  let decision = "비추천 ❌";
-  let reason = "수익성이 낮습니다.";
+<th>결과</th>
 
-  if (netProfit >= 5000 && margin >= 15 && roi >= 20) {
-    decision = "매입추천 ✅";
-    reason = "현재 기준으로 수익성이 양호합니다.";
-  } else if (netProfit >= 2500 && margin >= 8) {
-    decision = "보류 ⚠️";
-    reason = "수익은 가능하지만 가격·경쟁 상황 추가 확인이 필요합니다.";
-  }
+</tr>
 
-  document.getElementById("result").innerHTML = `
-    <div class="decision">${decision}</div>
+<tr>
 
-    <strong>${name}</strong><br><br>
+<td>상품명</td>
 
-    매입가: ${won(cost)}<br>
-    예상 판매가: ${won(sale)}<br>
-    쿠팡 수수료: ${won(coupangFee)}<br>
-    배송비: ${won(shipping)}<br>
-    기타비용: ${won(other)}<br><br>
+<td>분석중...</td>
 
-    <strong>예상 순이익: ${won(netProfit)}</strong><br>
-    판매 마진율: ${margin.toFixed(1)}%<br>
-    매입 ROI: ${roi.toFixed(1)}%<br><br>
+</tr>
 
-    ${reason}
-  `;
+<tr>
+
+<td>코스트코 가격</td>
+
+<td>분석중...</td>
+
+</tr>
+
+<tr>
+
+<td>쿠팡 최저가</td>
+
+<td>검색중...</td>
+
+</tr>
+
+<tr>
+
+<td>예상 순이익</td>
+
+<td>계산중...</td>
+
+</tr>
+
+<tr>
+
+<td>ROI</td>
+
+<td>계산중...</td>
+
+</tr>
+
+<tr>
+
+<td>AI 추천</td>
+
+<td class="good">분석 진행중</td>
+
+</tr>
+
+</table>
+
+`;
+
+setTimeout(()=>{
+
+document.getElementById("result").innerHTML=`
+
+<table>
+
+<tr>
+
+<th>항목</th>
+
+<th>결과</th>
+
+</tr>
+
+<tr>
+
+<td>상품명</td>
+
+<td>Costco Product</td>
+
+</tr>
+
+<tr>
+
+<td>코스트코 가격</td>
+
+<td>19,990원</td>
+
+</tr>
+
+<tr>
+
+<td>쿠팡 최저가</td>
+
+<td>34,900원</td>
+
+</tr>
+
+<tr>
+
+<td>예상 순이익</td>
+
+<td>7,200원</td>
+
+</tr>
+
+<tr>
+
+<td>ROI</td>
+
+<td>36%</td>
+
+</tr>
+
+<tr>
+
+<td>AI 추천</td>
+
+<td class="good">★★★★★ 추천</td>
+
+</tr>
+
+</table>
+
+`;
+
+},1500);
+
 }
+
 </script>
 
 </body>
+
 </html>
