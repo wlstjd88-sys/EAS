@@ -1,314 +1,44 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>EAS AI Product Sourcing</title>
+    <title>EAS AI Product Sourcing</title>
 
-<style>
-
-body{
-font-family:Arial,sans-serif;
-background:#f4f7fb;
-margin:0;
-padding:30px;
-}
-
-.container{
-max-width:950px;
-margin:auto;
-}
-
-h1{
-margin-bottom:5px;
-}
-
-.subtitle{
-color:#666;
-margin-bottom:25px;
-}
-
-.card{
-background:white;
-padding:25px;
-border-radius:15px;
-box-shadow:0 5px 15px rgba(0,0,0,.08);
-}
-
-input{
-width:100%;
-padding:15px;
-font-size:16px;
-margin:15px 0;
-border-radius:8px;
-border:1px solid #ddd;
-box-sizing:border-box;
-}
-
-button{
-width:100%;
-padding:16px;
-font-size:18px;
-background:#0066ff;
-color:white;
-border:none;
-border-radius:8px;
-cursor:pointer;
-font-weight:bold;
-}
-
-button:hover{
-background:#004dcc;
-}
-
-.loading{
-
-margin-top:25px;
-background:white;
-padding:25px;
-border-radius:15px;
-box-shadow:0 5px 15px rgba(0,0,0,.08);
-
-}
-
-progress{
-width:100%;
-height:22px;
-}
-
-table{
-width:100%;
-margin-top:25px;
-border-collapse:collapse;
-background:white;
-border-radius:12px;
-overflow:hidden;
-box-shadow:0 5px 15px rgba(0,0,0,.08);
-}
-
-th,td{
-
-padding:14px;
-border-bottom:1px solid #eee;
-text-align:center;
-
-}
-
-th{
-background:#0066ff;
-color:white;
-}
-
-.good{
-color:#0a9f3d;
-font-weight:bold;
-font-size:18px;
-}
-
-.bad{
-color:red;
-font-weight:bold;
-}
-
-.score{
-
-font-size:28px;
-font-weight:bold;
-color:#0066ff;
-
-}
-
-</style>
-
+    <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
 
 <div class="container">
 
-<h1>🚀 EAS AI Product Sourcing</h1>
+    <h1>🚀 EAS AI Product Sourcing</h1>
 
-<div class="subtitle">
+    <div class="subtitle">
+        Costco → Coupang AI 분석 시스템 v0.2
+    </div>
 
-Costco → Coupang AI Sourcing Engine
+    <div class="card">
 
-</div>
+        <label><b>코스트코 상품 URL</b></label>
 
-<div class="card">
+        <input
+            id="url"
+            placeholder="https://www.costco.co.kr/...">
 
-<label><b>코스트코 상품 URL</b></label>
+        <button onclick="analyze()">
+            AI 분석 시작
+        </button>
 
-<input
-id="url"
-placeholder="https://www.costco.co.kr/...">
+    </div>
 
-<button onclick="analyze()">
-
-🤖 AI 분석 시작
-
-</button>
-
-</div>
-
-<div id="result"></div>
+    <div id="result"></div>
 
 </div>
 
-<script>
-
-function analyze(){
-
-const url=document.getElementById("url").value;
-
-if(url==""){
-
-alert("상품 URL를 입력하세요.");
-
-return;
-
-}
-
-const result=document.getElementById("result");
-
-result.innerHTML=`
-
-<div class="loading">
-
-<h2>🤖 AI 분석 진행중...</h2>
-
-<p id="step">
-
-① 코스트코 상품 정보 수집
-
-</p>
-
-<progress id="bar" value="5" max="100"></progress>
-
-</div>
-
-`;
-
-const bar=document.getElementById("bar");
-const step=document.getElementById("step");
-
-setTimeout(()=>{
-
-bar.value=25;
-
-step.innerHTML="② 상품명 및 가격 분석";
-
-},500);
-
-setTimeout(()=>{
-
-bar.value=50;
-
-step.innerHTML="③ 쿠팡 최저가 검색";
-
-},1000);
-
-setTimeout(()=>{
-
-bar.value=75;
-
-step.innerHTML="④ 예상 수익 계산";
-
-},1500);
-
-setTimeout(()=>{
-
-bar.value=95;
-
-step.innerHTML="⑤ AI 최종 판단";
-
-},2000);
-
-setTimeout(()=>{
-
-result.innerHTML=`
-
-<table>
-
-<tr>
-
-<th colspan="2">
-
-AI 분석 완료
-
-</th>
-
-</tr>
-
-<tr>
-
-<td>상품명</td>
-
-<td>Costco Product</td>
-
-</tr>
-
-<tr>
-
-<td>코스트코 가격</td>
-
-<td>19,990원</td>
-
-</tr>
-
-<tr>
-
-<td>쿠팡 예상 판매가</td>
-
-<td>34,900원</td>
-
-</tr>
-
-<tr>
-
-<td>예상 순이익</td>
-
-<td>7,200원</td>
-
-</tr>
-
-<tr>
-
-<td>ROI</td>
-
-<td>36%</td>
-
-</tr>
-
-<tr>
-
-<td>AI 점수</td>
-
-<td class="score">92점</td>
-
-</tr>
-
-<tr>
-
-<td>AI 추천</td>
-
-<td class="good">
-
-★★★★★ 적극 추천
-
-</td>
-
-</tr>
-
-</table>
-
-`;
-
-},2600);
-
-}
-
-</script>
+<script src="app.js"></script>
 
 </body>
 
